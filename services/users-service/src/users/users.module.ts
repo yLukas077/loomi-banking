@@ -5,9 +5,11 @@ import { BankingDetails } from './entities/banking-details.entity';
 import { UsersService } from './users.service';
 import { UsersController } from './users.controller';
 import { RabbitMQPublisher } from '../rabbitmq/rabbitmq.publisher'
+import { RedisModule } from '../redis/redis.module'
 
 @Module({
-  imports: [TypeOrmModule.forFeature([User, BankingDetails])],
+  imports: [TypeOrmModule.forFeature([User, BankingDetails]),
+  RedisModule],
   controllers: [UsersController],
   providers: [UsersService, RabbitMQPublisher],
 })
