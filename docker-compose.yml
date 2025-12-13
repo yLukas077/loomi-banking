@@ -18,6 +18,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    networks:
+      - ll_network
 
   redis:
     image: redis:7
@@ -33,6 +35,8 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    networks:
+      - ll_network
 
   rabbitmq:
     image: rabbitmq:3.11-management
@@ -51,6 +55,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 6
+    networks:
+      - ll_network
 
   users-service:
     build:
