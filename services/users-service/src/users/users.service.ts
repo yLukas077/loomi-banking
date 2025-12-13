@@ -12,6 +12,7 @@ import { BankingDetails } from './entities/banking-details.entity'
 import { BankingDetailsDto } from './dto/banking-details.dto'
 import { RabbitMQPublisher } from '../rabbitmq/rabbitmq.publisher'
 import { RedisService } from 'src/redis/redis.service'
+import { IdempotencyService } from 'src/common/idempotency/idempotency.service'
 
 @Injectable()
 export class UsersService {
@@ -23,11 +24,25 @@ export class UsersService {
     private detailsRepo: Repository<BankingDetails>,
 
     private readonly publisher: RabbitMQPublisher,
-
     private readonly redis: RedisService,
+    private readonly idempotency: IdempotencyService,
   ) {}
 
-  async create(data: CreateUserDto) {
+  async create(data: CreateUserDto, idempotencyKey?: string | null) {
+
+    if (idempotencyKey) {
+      const cached = await this.idempotency.get(idempotencyKey)
+      if (cached?.status === 'success') {
+        return cached.data
+      }
+
+      await this.idempotency.save(idempotencyKey, {
+        status: 'pending',
+        data: null,
+        createdAt: new Date().toISOString(),
+      })
+    }
+
     const exists = await this.usersRepo.findOne({ where: { email: data.email } })
     if (exists) throw new ConflictException('Email já está em uso')
 
@@ -40,7 +55,15 @@ export class UsersService {
       name: saved.name,
       email: saved.email,
       timestamp: new Date().toISOString(),
-    },)
+    })
+
+    if (idempotencyKey) {
+      await this.idempotency.save(idempotencyKey, {
+        status: 'success',
+        data: saved,
+        createdAt: new Date().toISOString(),
+      })
+    }
 
     return saved
   }
@@ -49,9 +72,7 @@ export class UsersService {
     const cacheKey = `users:${id}`
 
     const cached = await this.redis.get(cacheKey)
-    if (cached) {
-      return JSON.parse(cached)
-    }
+    if (cached) return JSON.parse(cached)
 
     const user = await this.usersRepo.findOne({
       where: { id },
@@ -77,9 +98,7 @@ export class UsersService {
     if (!user) throw new NotFoundException('User not found')
 
     if (data.email && data.email !== user.email) {
-      const exists = await this.usersRepo.findOne({
-        where: { email: data.email },
-      })
+      const exists = await this.usersRepo.findOne({ where: { email: data.email } })
       if (exists) throw new ConflictException('Email já está em uso')
     }
 
@@ -112,14 +131,10 @@ export class UsersService {
     let result: BankingDetails
 
     if (user.bankingDetails) {
-      const updated = Object.assign(user.bankingDetails, data)
-      result = await this.detailsRepo.save(updated)
+      Object.assign(user.bankingDetails, data)
+      result = await this.detailsRepo.save(user.bankingDetails)
     } else {
-      const newDetails = this.detailsRepo.create({
-        ...data,
-        user,
-        userId: user.id,
-      })
+      const newDetails = this.detailsRepo.create({ ...data, user, userId: user.id })
       result = await this.detailsRepo.save(newDetails)
     }
 
