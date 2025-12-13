@@ -1,8 +1,20 @@
-import { IsEmail, IsOptional, IsString } from 'class-validator'
+import {
+  IsEmail,
+  IsString,
+  MinLength,
+  MaxLength,
+  Matches,
+  IsOptional,
+} from 'class-validator'
 
 export class UpdateUserDto {
   @IsOptional()
   @IsString()
+  @MinLength(3)
+  @MaxLength(50)
+  @Matches(/^[A-Za-zÀ-ÿ\s']+$/, {
+    message: 'Nome deve conter apenas letras e espaços',
+  })
   name?: string
 
   @IsOptional()
@@ -11,5 +23,7 @@ export class UpdateUserDto {
 
   @IsOptional()
   @IsString()
+  @MinLength(3)
+  @MaxLength(100)
   address?: string
 }

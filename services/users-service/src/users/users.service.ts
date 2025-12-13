@@ -40,7 +40,7 @@ export class UsersService {
       name: saved.name,
       email: saved.email,
       timestamp: new Date().toISOString(),
-    })
+    },)
 
     return saved
   }
