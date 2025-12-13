@@ -11,6 +11,7 @@ import { UpdateUserDto } from './dto/update-user.dto'
 import { BankingDetails } from './entities/banking-details.entity'
 import { BankingDetailsDto } from './dto/banking-details.dto'
 import { RabbitMQPublisher } from '../rabbitmq/rabbitmq.publisher'
+import { RedisService } from 'src/redis/redis.service'
 
 @Injectable()
 export class UsersService {
@@ -22,6 +23,8 @@ export class UsersService {
     private detailsRepo: Repository<BankingDetails>,
 
     private readonly publisher: RabbitMQPublisher,
+
+    private readonly redis: RedisService,
   ) {}
 
   async create(data: CreateUserDto) {
@@ -43,12 +46,21 @@ export class UsersService {
   }
 
   async findById(id: string) {
+    const cacheKey = `users:${id}`
+
+    const cached = await this.redis.get(cacheKey)
+    if (cached) {
+      return JSON.parse(cached)
+    }
+
     const user = await this.usersRepo.findOne({
       where: { id },
       relations: ['bankingDetails'],
     })
 
     if (!user) throw new NotFoundException('User not found')
+
+    await this.redis.set(cacheKey, user, 60)
 
     return user
   }
@@ -72,7 +84,11 @@ export class UsersService {
     }
 
     const updated = Object.assign(user, data)
-    return this.usersRepo.save(updated)
+    const saved = await this.usersRepo.save(updated)
+
+    await this.redis.del(`users:${id}`)
+
+    return saved
   }
 
   async delete(id: string) {
@@ -80,6 +96,8 @@ export class UsersService {
     if (!user) throw new NotFoundException('User not found')
 
     await this.usersRepo.delete(id)
+    await this.redis.del(`users:${id}`)
+
     return true
   }
 
@@ -105,7 +123,6 @@ export class UsersService {
       result = await this.detailsRepo.save(newDetails)
     }
 
-
     await this.publisher.publish('banking_details.updated', {
       event: 'banking_details.updated',
       userId: user.id,
@@ -116,6 +133,8 @@ export class UsersService {
       },
       timestamp: new Date().toISOString(),
     })
+
+    await this.redis.del(`users:${userId}`)
 
     return result
   }
