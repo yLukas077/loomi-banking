@@ -2,6 +2,7 @@ import { Body, Controller, Get, Param, Patch, Post, Delete } from '@nestjs/commo
 import { UsersService } from './users.service'
 import { CreateUserDto } from './dto/create-user.dto'
 import { UpdateUserDto } from './dto/update-user.dto'
+import { BankingDetailsDto } from './dto/banking-details.dto'
 
 @Controller('users')
 export class UsersController {
@@ -33,4 +34,12 @@ export class UsersController {
     await this.usersService.delete(id)
     return
   }
+
+  @Patch(':id/banking-details')
+    async setBankingDetails(
+      @Param('id') id: string,
+      @Body() body: BankingDetailsDto,
+    ) {
+      return this.usersService.setBankingDetails(id, body)
+    }
 }

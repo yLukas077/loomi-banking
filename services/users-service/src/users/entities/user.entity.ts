@@ -4,7 +4,11 @@ import {
   PrimaryGeneratedColumn,
   CreateDateColumn,
   UpdateDateColumn,
+  OneToOne,
 } from 'typeorm'
+
+import { BankingDetails } from './banking-details.entity'
+
 
 @Entity()
 export class User {
@@ -25,4 +29,8 @@ export class User {
 
   @UpdateDateColumn()
   updatedAt: Date
+
+  @OneToOne(() => BankingDetails, (details) => details.user)
+  bankingDetails: BankingDetails
+
 }
