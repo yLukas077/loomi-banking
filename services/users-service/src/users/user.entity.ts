@@ -1,5 +1,10 @@
-import { Entity, PrimaryGeneratedColumn, Column, OneToOne } from 'typeorm'
-import { BankingDetails } from './banking-details.entity'
+import {
+  Entity,
+  Column,
+  PrimaryGeneratedColumn,
+  CreateDateColumn,
+  UpdateDateColumn,
+} from 'typeorm'
 
 @Entity()
 export class User {
@@ -13,11 +18,11 @@ export class User {
   email: string
 
   @Column({ nullable: true })
-  address: string
+  address?: string
 
-  @Column({ nullable: true })
-  profilePicture: string
+  @CreateDateColumn()
+  createdAt: Date
 
-  @OneToOne(() => BankingDetails, (bd) => bd.user)
-  bankingDetails: BankingDetails
+  @UpdateDateColumn()
+  updatedAt: Date
 }
