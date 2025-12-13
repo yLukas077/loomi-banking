@@ -68,5 +68,12 @@ export class UsersService {
     return this.usersRepo.save(updated)
   }
 
+  async findAll() {
+    return this.usersRepo.find({
+      relations: ['bankingDetails'],
+      order: { createdAt: 'DESC' }
+    })
+  }
+
 
 }
