@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Delete } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Delete, Headers } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -11,11 +11,14 @@ export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 
   @Post()
-  @ApiOperation({ summary: 'Create a new user' })
+  @ApiOperation({ summary: 'Create a new user (idempotent)' })
   @ApiResponse({ status: 201, description: 'User created successfully' })
   @ApiResponse({ status: 409, description: 'Email already in use' })
-  async createUser(@Body() body: CreateUserDto) {
-    return this.usersService.create(body);
+  async createUser(
+    @Body() body: CreateUserDto,
+    @Headers('idempotency-key') idempotencyKey: string
+  ) {
+    return this.usersService.create(body, idempotencyKey || null);
   }
 
   @Get(':id')
@@ -55,10 +58,7 @@ export class UsersController {
   @ApiOperation({ summary: 'Set or update banking details for a user' })
   @ApiResponse({ status: 200, description: 'Banking details saved successfully' })
   @ApiResponse({ status: 404, description: 'User not found' })
-  async setBankingDetails(
-    @Param('id') id: string,
-    @Body() body: BankingDetailsDto,
-  ) {
+  async setBankingDetails(@Param('id') id: string, @Body() body: BankingDetailsDto) {
     return this.usersService.setBankingDetails(id, body);
   }
 }

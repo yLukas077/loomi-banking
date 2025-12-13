@@ -6,10 +6,12 @@ import { UsersService } from './users.service';
 import { UsersController } from './users.controller';
 import { RabbitMQPublisher } from '../rabbitmq/rabbitmq.publisher'
 import { RedisModule } from '../redis/redis.module'
+import { IdempotencyModule } from '../common/idempotency/idempotency.module';
 
 @Module({
   imports: [TypeOrmModule.forFeature([User, BankingDetails]),
-  RedisModule],
+  RedisModule,
+  IdempotencyModule], 
   controllers: [UsersController],
   providers: [UsersService, RabbitMQPublisher],
 })
