@@ -2,14 +2,15 @@ import {
   Injectable,
   ConflictException,
   NotFoundException,
-} from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { User } from './entities/user.entity';
-import { CreateUserDto } from './dto/create-user.dto';
-import { UpdateUserDto } from './dto/update-user.dto';
-import { BankingDetails } from './entities/banking-details.entity';
-import { BankingDetailsDto } from './dto/banking-details.dto';
+} from '@nestjs/common'
+import { InjectRepository } from '@nestjs/typeorm'
+import { Repository } from 'typeorm'
+import { User } from './entities/user.entity'
+import { CreateUserDto } from './dto/create-user.dto'
+import { UpdateUserDto } from './dto/update-user.dto'
+import { BankingDetails } from './entities/banking-details.entity'
+import { BankingDetailsDto } from './dto/banking-details.dto'
+import { RabbitMQPublisher } from '../rabbitmq/rabbitmq.publisher'
 
 @Injectable()
 export class UsersService {
@@ -19,71 +20,67 @@ export class UsersService {
 
     @InjectRepository(BankingDetails)
     private detailsRepo: Repository<BankingDetails>,
+
+    private readonly publisher: RabbitMQPublisher,
   ) {}
 
   async create(data: CreateUserDto) {
-    const exists = await this.usersRepo.findOne({
-      where: { email: data.email },
-    });
+    const exists = await this.usersRepo.findOne({ where: { email: data.email } })
+    if (exists) throw new ConflictException('Email já está em uso')
 
-    if (exists) {
-      throw new ConflictException('Email já está em uso');
-    }
+    const user = this.usersRepo.create(data)
+    const saved = await this.usersRepo.save(user)
 
-    const user = this.usersRepo.create(data);
-    return this.usersRepo.save(user);
+    await this.publisher.publish('user.created', {
+      event: 'user.created',
+      userId: saved.id,
+      name: saved.name,
+      email: saved.email,
+      timestamp: new Date().toISOString(),
+    })
+
+    return saved
   }
 
   async findById(id: string) {
     const user = await this.usersRepo.findOne({
       where: { id },
       relations: ['bankingDetails'],
-    });
+    })
 
-    if (!user) throw new NotFoundException('User not found');
+    if (!user) throw new NotFoundException('User not found')
 
-    return user;
-  }
-
-  async delete(id: string) {
-    const user = await this.usersRepo.findOne({ where: { id } });
-
-    if (!user) {
-      throw new NotFoundException('User not found');
-    }
-
-    await this.usersRepo.delete(id);
-
-    return true;
-  }
-
-  async update(id: string, data: UpdateUserDto) {
-    const user = await this.usersRepo.findOne({ where: { id } });
-
-    if (!user) {
-      throw new NotFoundException('User not found');
-    }
-
-    if (data.email && data.email !== user.email) {
-      const emailInUse = await this.usersRepo.findOne({
-        where: { email: data.email },
-      });
-
-      if (emailInUse) {
-        throw new ConflictException('Email já está em uso');
-      }
-    }
-
-    const updated = Object.assign(user, data);
-
-    return this.usersRepo.save(updated);
+    return user
   }
 
   async findAll() {
     return this.usersRepo.find({
       relations: ['bankingDetails'],
       order: { createdAt: 'DESC' },
-    });
+    })
+  }
+
+  async update(id: string, data: UpdateUserDto) {
+    const user = await this.usersRepo.findOne({ where: { id } })
+    if (!user) throw new NotFoundException('User not found')
+
+    if (data.email && data.email !== user.email) {
+      const exists = await this.usersRepo.findOne({
+        where: { email: data.email },
+      })
+      if (exists) throw new ConflictException('Email já está em uso')
+    }
+
+    const updated = Object.assign(user, data)
+    return this.usersRepo.save(updated)
+  }
+
+  async delete(id: string) {
+    const user = await this.usersRepo.findOne({ where: { id } })
+    if (!user) throw new NotFoundException('User not found')
+
+    await this.usersRepo.delete(id)
+    return true
   }
 
   async setBankingDetails(userId: string, data: BankingDetailsDto) {
@@ -92,26 +89,34 @@ export class UsersService {
       relations: ['bankingDetails'],
     })
 
-    if (!user) {
-      throw new NotFoundException('User not found')
-    }
+    if (!user) throw new NotFoundException('User not found')
 
-    // Se já existe → atualizar
+    let result: BankingDetails
+
     if (user.bankingDetails) {
-      await this.detailsRepo.update(user.bankingDetails.id, data)
-      return this.detailsRepo.findOne({
-        where: { id: user.bankingDetails.id },
+      const updated = Object.assign(user.bankingDetails, data)
+      result = await this.detailsRepo.save(updated)
+    } else {
+      const newDetails = this.detailsRepo.create({
+        ...data,
+        user,
+        userId: user.id,
       })
+      result = await this.detailsRepo.save(newDetails)
     }
 
-    // Se não existe → criar
-    const details = this.detailsRepo.create({
-      ...data,
-      user,
+
+    await this.publisher.publish('banking_details.updated', {
+      event: 'banking_details.updated',
       userId: user.id,
+      details: {
+        agency: result.agency,
+        accountNumber: result.accountNumber,
+        accountType: result.accountType,
+      },
+      timestamp: new Date().toISOString(),
     })
 
-    return this.detailsRepo.save(details)
+    return result
   }
-
 }
