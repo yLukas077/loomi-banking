@@ -94,6 +94,24 @@ services:
     networks:
       - ll_network
 
+  api-gateway:
+    build:
+      context: ./services/api-gateway
+    container_name: ll_api_gateway
+    restart: unless-stopped
+    env_file:
+      - ./services/api-gateway/.env
+    depends_on:
+      users-service:
+        condition: service_started
+      transactions-service:
+        condition: service_started
+    ports:
+      - "3000:3000"
+    networks:
+      - ll_network
+
+
 volumes:
   pgdata:
   redisdata:
