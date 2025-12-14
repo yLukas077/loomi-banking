@@ -1,23 +1,60 @@
 import { Injectable, NotFoundException } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
 import { Repository } from 'typeorm'
-import { Transaction, TransactionStatus } from './entities/transaction.entity'
+import { Transaction, TransactionStatus, TransactionType } from './entities/transaction.entity'
 import { CreateTransactionDto } from './dto/create-transaction.dto'
+import { RedisService } from '../redis/redis.service'
+import { RabbitMQPublisher } from 'src/rabbitmq/rabbitmq.publisher'
+import { BadRequestException } from '@nestjs/common'
 
 @Injectable()
 export class TransactionsService {
   constructor(
     @InjectRepository(Transaction)
     private readonly transactionsRepo: Repository<Transaction>,
+    private readonly publisher: RabbitMQPublisher,
+    private readonly redis: RedisService,
   ) {}
 
   async create(data: CreateTransactionDto) {
+    const user = await this.redis.get(`user:${data.userId}`)
+    if (!user) {
+      throw new BadRequestException('User does not exist')
+    }
+
+    if (data.type === TransactionType.WITHDRAW || data.type === TransactionType.TRANSFER) {
+      const banking = await this.redis.get(`user:${data.userId}:banking`) as {
+        agency: string
+        accountNumber: string
+        accountType: string
+      } | null
+
+      if (!banking) {
+        throw new BadRequestException('User has no banking details configured')
+      }
+
+      if (!banking.accountNumber || !banking.agency || !banking.accountType) {
+        throw new BadRequestException('User banking details are incomplete')
+      }
+    }
+
     const tx = this.transactionsRepo.create({
       ...data,
       status: TransactionStatus.PENDING,
     })
 
-    return this.transactionsRepo.save(tx)
+    const saved = await this.transactionsRepo.save(tx)
+
+    await this.publisher.publish('transaction.created', {
+      event: 'transaction.created',
+      transactionId: saved.id,
+      userId: saved.userId,
+      type: saved.type,
+      amount: saved.amount,
+      timestamp: new Date().toISOString(),
+    })
+
+    return saved
   }
 
   async findAll() {
@@ -37,6 +74,16 @@ export class TransactionsService {
     if (!tx) throw new NotFoundException('Transaction not found')
 
     tx.status = status
-    return this.transactionsRepo.save(tx)
-    }
+    const saved = await this.transactionsRepo.save(tx)
+
+    await this.publisher.publish('transaction.status_updated', {
+      event: 'transaction.status_updated',
+      transactionId: saved.id,
+      userId: saved.userId,
+      newStatus: saved.status,
+      timestamp: new Date().toISOString(),
+    })
+
+    return saved
+  }
 }
