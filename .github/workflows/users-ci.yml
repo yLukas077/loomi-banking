@@ -1,0 +1,63 @@
+name: Users Service CI
+on:
+  push:
+    paths:
+      - "services/users-service/**"
+      - ".github/workflows/users-ci.yml"
+  pull_request:
+    paths:
+      - "services/users-service/**"
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: loomi_user
+          POSTGRES_PASSWORD: loomi_pass
+          POSTGRES_DB: loomi_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U loomi_user -d loomi_db"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+      rabbitmq:
+        image: rabbitmq:3.11-management
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 5s
+          --health-timeout 10s
+          --health-retries 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: services/users-service/package-lock.json
+      - name: Install dependencies
+        working-directory: ./services/users-service
+        run: npm install
+      - name: Run tests
+        working-directory: ./services/users-service
+        env:
+          DATABASE_URL: postgres://loomi_user:loomi_pass@localhost:5432/loomi_db
+          REDIS_URL: redis://localhost:6379
+          RABBITMQ_URL: amqp://guest:guest@localhost:5672
+        run: npm run test
