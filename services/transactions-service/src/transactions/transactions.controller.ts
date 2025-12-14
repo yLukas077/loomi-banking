@@ -40,6 +40,13 @@ export class TransactionsController {
     return this.transactionsService.findById(id)
   }
 
+  @Get('user/:userId')
+  @ApiOperation({ summary: 'List all transactions for a specific user' })
+  @ApiResponse({ status: 200, description: 'Transactions retrieved successfully' })
+  async findByUser(@Param('userId') userId: string) {
+    return this.transactionsService.findByUser(userId)
+  }
+  
   @Patch(':id/status')
   @ApiOperation({ summary: 'Update the status of a transaction' })
   @ApiResponse({ status: 200, description: 'Transaction status updated successfully' })

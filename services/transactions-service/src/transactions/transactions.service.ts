@@ -81,6 +81,14 @@ export class TransactionsService {
     })
   }
 
+  async findByUser(userId: string) {
+    return this.transactionsRepo.find({
+      where: { userId },
+      order: { createdAt: 'DESC' },
+    })
+  }
+
+
   async findById(id: string) {
     const tx = await this.transactionsRepo.findOne({ where: { id } })
     if (!tx) throw new NotFoundException('Transaction not found')
