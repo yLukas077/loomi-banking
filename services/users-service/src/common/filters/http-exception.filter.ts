@@ -1,31 +1,59 @@
 import {
-  ExceptionFilter,
   Catch,
+  ExceptionFilter,
   ArgumentsHost,
   HttpException,
+  Logger,
 } from '@nestjs/common'
-import { Response } from 'express'
 
 @Catch()
 export class GlobalExceptionFilter implements ExceptionFilter {
-  catch(exception: unknown, host: ArgumentsHost) {
+  private readonly logger = new Logger(GlobalExceptionFilter.name)
+
+  catch(exception: any, host: ArgumentsHost) {
     const ctx = host.switchToHttp()
-    const response = ctx.getResponse<Response>()
-    const req = ctx.getRequest()
+    const response = ctx.getResponse()
+    const request = ctx.getRequest()
 
     const status =
-      exception instanceof HttpException ? exception.getStatus() : 500
+      exception instanceof HttpException
+        ? exception.getStatus()
+        : 500
 
-    const message =
+    const rawResponse =
       exception instanceof HttpException
         ? exception.getResponse()
         : 'Internal server error'
 
-    response.status(status).json({
-      success: false,
-      path: req.url,
+    let errorMessage: string
+
+    if (typeof rawResponse === 'string') {
+      errorMessage = rawResponse
+    } else if (
+      typeof rawResponse === 'object' &&
+      rawResponse !== null &&
+      'message' in rawResponse
+    ) {
+      const extracted = (rawResponse as any).message
+      errorMessage = Array.isArray(extracted) ? extracted.join(', ') : extracted
+    } else {
+      errorMessage = 'Unexpected error'
+    }
+
+    const errorResponse = {
+      statusCode: status,
       timestamp: new Date().toISOString(),
-      error: message,
-    })
+      path: request.url,
+      method: request.method,
+      message: errorMessage,
+      requestId: request.requestId,
+    }
+
+    this.logger.error(
+      `Error ${status} - ${request.method} ${request.url} requestId=${request.requestId}`,
+      JSON.stringify(errorResponse),
+    )
+
+    response.status(status).json(errorResponse)
   }
 }

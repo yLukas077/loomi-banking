@@ -12,6 +12,9 @@ export class RabbitMQPublisher implements OnModuleInit {
 
     this.connection = await amqp.connect(url)
     this.channel = await this.connection.createChannel()
+    
+    await this.channel.assertQueue('transactions_service_queue', { durable: true })
+    await this.channel.bindQueue('transactions_service_queue', 'users.events', '#')
 
     await this.channel.assertExchange(this.exchange, 'topic', { durable: true })
 
