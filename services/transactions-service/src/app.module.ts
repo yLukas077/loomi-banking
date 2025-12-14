@@ -4,9 +4,10 @@ import { TransactionsModule } from './transactions/transactions.module';
 import { RabbitMQModule } from './rabbitmq/rabbitmq.module';
 import { RedisModule } from './redis/redis.module';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
+import { IdempotencyModule } from './common/idempotency/idempotency.module';
 
 @Module({
-  imports: [DatabaseModule, TransactionsModule, RabbitMQModule, RedisModule],
+  imports: [DatabaseModule, TransactionsModule, RabbitMQModule, RedisModule, IdempotencyModule],
   controllers: [],
   providers: [],
 })

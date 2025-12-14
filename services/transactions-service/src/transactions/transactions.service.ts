@@ -1,22 +1,36 @@
-import { Injectable, NotFoundException } from '@nestjs/common'
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
 import { Repository } from 'typeorm'
 import { Transaction, TransactionStatus, TransactionType } from './entities/transaction.entity'
 import { CreateTransactionDto } from './dto/create-transaction.dto'
 import { RedisService } from '../redis/redis.service'
 import { RabbitMQPublisher } from 'src/rabbitmq/rabbitmq.publisher'
-import { BadRequestException } from '@nestjs/common'
+import { IdempotencyService } from 'src/common/idempotency/idempotency.service'
+import { createHash } from 'crypto'
 
 @Injectable()
 export class TransactionsService {
   constructor(
     @InjectRepository(Transaction)
     private readonly transactionsRepo: Repository<Transaction>,
+
     private readonly publisher: RabbitMQPublisher,
+
     private readonly redis: RedisService,
+
+    private readonly idempotency: IdempotencyService,
   ) {}
 
-  async create(data: CreateTransactionDto) {
+  async create(data: CreateTransactionDto, idempotencyKey?: string) {
+    const payloadHash = createHash('sha256')
+      .update(JSON.stringify(data))
+      .digest('hex')
+
+    if (idempotencyKey) {
+      const cached = await this.idempotency.checkOrSave(idempotencyKey, payloadHash)
+      if (cached) return cached
+    }
+
     const user = await this.redis.get(`user:${data.userId}`)
     if (!user) {
       throw new BadRequestException('User does not exist')
@@ -53,6 +67,10 @@ export class TransactionsService {
       amount: saved.amount,
       timestamp: new Date().toISOString(),
     })
+
+    if (idempotencyKey) {
+      await this.idempotency.saveResponse(idempotencyKey, saved, payloadHash)
+    }
 
     return saved
   }
