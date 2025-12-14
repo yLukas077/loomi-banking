@@ -4,8 +4,8 @@ import { Repository } from 'typeorm'
 import { Transaction, TransactionStatus, TransactionType } from './entities/transaction.entity'
 import { CreateTransactionDto } from './dto/create-transaction.dto'
 import { RedisService } from '../redis/redis.service'
-import { RabbitMQPublisher } from 'src/rabbitmq/rabbitmq.publisher'
-import { IdempotencyService } from 'src/common/idempotency/idempotency.service'
+import { RabbitMQPublisher } from '../rabbitmq/rabbitmq.publisher'
+import { IdempotencyService } from '../common/idempotency/idempotency.service'
 import { createHash } from 'crypto'
 
 @Injectable()
