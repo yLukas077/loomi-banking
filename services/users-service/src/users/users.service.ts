@@ -11,8 +11,8 @@ import { UpdateUserDto } from './dto/update-user.dto'
 import { BankingDetails } from './entities/banking-details.entity'
 import { BankingDetailsDto } from './dto/banking-details.dto'
 import { RabbitMQPublisher } from '../rabbitmq/rabbitmq.publisher'
-import { RedisService } from 'src/redis/redis.service'
-import { IdempotencyService } from 'src/common/idempotency/idempotency.service'
+import { RedisService } from '../redis/redis.service'
+import { IdempotencyService } from '../common/idempotency/idempotency.service'
 
 @Injectable()
 export class UsersService {
