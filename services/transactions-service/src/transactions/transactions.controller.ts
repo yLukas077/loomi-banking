@@ -1,7 +1,7 @@
-import { Body, Controller, Get, Param, Patch, Post, Headers } from '@nestjs/common'
+import { Body, Controller, Get, Param, Patch, Post, Headers, Query } from '@nestjs/common'
 import { TransactionsService } from './transactions.service'
 import { CreateTransactionDto } from './dto/create-transaction.dto'
-import { ApiTags, ApiOperation, ApiResponse, ApiHeader } from '@nestjs/swagger'
+import { ApiTags, ApiOperation, ApiResponse, ApiHeader, ApiQuery } from '@nestjs/swagger'
 import { UpdateTransactionStatusDto } from './dto/update-status.dto'
 
 @ApiTags('Transactions')
@@ -28,7 +28,11 @@ export class TransactionsController {
   @Get()
   @ApiOperation({ summary: 'List all transactions' })
   @ApiResponse({ status: 200 })
-  async findAll() {
+  @ApiQuery({ name: 'userId', required: false, description: 'Filter transactions by user ID' })
+  async findAll(@Query('userId') userId?: string) {
+    if (userId) {
+      return this.transactionsService.findByUser(userId)
+    }
     return this.transactionsService.findAll()
   }
 

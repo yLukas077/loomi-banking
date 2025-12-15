@@ -17,8 +17,11 @@ export class Transaction {
   @PrimaryGeneratedColumn('uuid')
   id: string
 
-  @Column({ type: 'uuid' })
-  userId: string
+  @Column({ type: 'uuid', nullable: true })
+  senderUserId?: string
+
+  @Column({ type: 'uuid', nullable: true })
+  receiverUserId?: string
 
   @Column({ type: 'enum', enum: TransactionType })
   type: TransactionType

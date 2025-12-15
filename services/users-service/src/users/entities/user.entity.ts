@@ -6,9 +6,7 @@ import {
   UpdateDateColumn,
   OneToOne,
 } from 'typeorm'
-
 import { BankingDetails } from './banking-details.entity'
-
 
 @Entity()
 export class User {
@@ -24,6 +22,9 @@ export class User {
   @Column({ nullable: true })
   address?: string
 
+  @Column({ type: 'decimal', precision: 12, scale: 2, default: 0 })
+  balance: number
+
   @CreateDateColumn()
   createdAt: Date
 
@@ -32,5 +33,4 @@ export class User {
 
   @OneToOne(() => BankingDetails, (details) => details.user)
   bankingDetails: BankingDetails
-
 }
