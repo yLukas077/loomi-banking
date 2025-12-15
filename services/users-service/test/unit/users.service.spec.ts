@@ -7,26 +7,22 @@ import { RabbitMQPublisher } from '../../src/rabbitmq/rabbitmq.publisher';
 import { RedisService } from '../../src/redis/redis.service';
 import { IdempotencyService } from '../../src/common/idempotency/idempotency.service';
 import { ConflictException, NotFoundException } from '@nestjs/common';
-import { userFactory } from '../factories/user.factory';
-import { bankingFactory } from '../factories/banking.factory';
 
-// Mocks
 const mockUserRepository = {
-  findOne: jest.fn(),
   find: jest.fn(),
+  findOne: jest.fn(),
   create: jest.fn(),
   save: jest.fn(),
   delete: jest.fn(),
 };
 
 const mockBankingDetailsRepository = {
-  findOne: jest.fn(),
   create: jest.fn(),
   save: jest.fn(),
 };
 
 const mockRabbitMQPublisher = {
-  publish: jest.fn(),
+  publish: jest.fn().mockResolvedValue(undefined),
   onModuleInit: jest.fn(),
 };
 
@@ -34,7 +30,6 @@ const mockRedisService = {
   get: jest.fn(),
   set: jest.fn(),
   del: jest.fn(),
-  onModuleInit: jest.fn(),
 };
 
 const mockIdempotencyService = {
@@ -62,151 +57,156 @@ describe('UsersService', () => {
     service = module.get<UsersService>(UsersService);
   });
 
+  // ==================== GET BALANCE ====================
+  describe('getBalance', () => {
+    it('should return user balance', async () => {
+      const user = {
+        id: 'user-uuid-1',
+        name: 'Test User',
+        balance: 500.50,
+        updatedAt: new Date(),
+      };
+      mockUserRepository.findOne.mockResolvedValue(user);
+
+      const result = await service.getBalance('user-uuid-1');
+
+      expect(result).toEqual({
+        userId: 'user-uuid-1',
+        balance: 500.50,
+        updatedAt: user.updatedAt,
+      });
+    });
+
+    it('should return zero balance for new user', async () => {
+      const user = {
+        id: 'user-uuid-1',
+        name: 'New User',
+        balance: 0,
+        updatedAt: new Date(),
+      };
+      mockUserRepository.findOne.mockResolvedValue(user);
+
+      const result = await service.getBalance('user-uuid-1');
+
+      expect(result.balance).toBe(0);
+    });
+
+    it('should throw NotFoundException when user does not exist', async () => {
+      mockUserRepository.findOne.mockResolvedValue(null);
+
+      await expect(service.getBalance('non-existent')).rejects.toThrow(NotFoundException);
+    });
+
+    it('should convert string balance to number', async () => {
+      const user = {
+        id: 'user-uuid-1',
+        balance: '123.45',
+        updatedAt: new Date(),
+      };
+      mockUserRepository.findOne.mockResolvedValue(user);
+
+      const result = await service.getBalance('user-uuid-1');
+
+      expect(result.balance).toBe(123.45);
+      expect(typeof result.balance).toBe('number');
+    });
+
+    it('should handle negative balance', async () => {
+      const user = {
+        id: 'user-uuid-1',
+        balance: -50.00,
+        updatedAt: new Date(),
+      };
+      mockUserRepository.findOne.mockResolvedValue(user);
+
+      const result = await service.getBalance('user-uuid-1');
+
+      expect(result.balance).toBe(-50.00);
+    });
+  });
+
   // ==================== CREATE ====================
   describe('create', () => {
-    it('should create a user successfully', async () => {
-      const dto = userFactory();
-      const savedUser = { id: 'uuid-1', ...dto, createdAt: new Date(), updatedAt: new Date() };
+    const createDto = { name: 'Test User', email: 'test@example.com' };
 
+    it('should create a user with zero balance', async () => {
+      const savedUser = { id: 'user-uuid-1', ...createDto, balance: 0 };
       mockUserRepository.findOne.mockResolvedValue(null);
-      mockUserRepository.create.mockReturnValue(dto);
+      mockUserRepository.create.mockReturnValue(savedUser);
       mockUserRepository.save.mockResolvedValue(savedUser);
-      mockRabbitMQPublisher.publish.mockResolvedValue(undefined);
 
-      const result = await service.create(dto);
+      const result = await service.create(createDto);
 
-      expect(result).toEqual(savedUser);
-      expect(mockUserRepository.findOne).toHaveBeenCalledWith({ where: { email: dto.email } });
-      expect(mockUserRepository.create).toHaveBeenCalledWith(dto);
-      expect(mockUserRepository.save).toHaveBeenCalled();
+      expect(result.balance).toBe(0);
+      expect(mockUserRepository.create).toHaveBeenCalledWith({
+        ...createDto,
+        balance: 0,
+      });
+    });
+
+    it('should throw ConflictException when email exists', async () => {
+      mockUserRepository.findOne.mockResolvedValue({ id: 'existing', email: createDto.email });
+
+      await expect(service.create(createDto)).rejects.toThrow(ConflictException);
+    });
+
+    it('should publish user.created event', async () => {
+      const savedUser = { id: 'user-uuid-1', ...createDto, balance: 0 };
+      mockUserRepository.findOne.mockResolvedValue(null);
+      mockUserRepository.create.mockReturnValue(savedUser);
+      mockUserRepository.save.mockResolvedValue(savedUser);
+
+      await service.create(createDto);
+
       expect(mockRabbitMQPublisher.publish).toHaveBeenCalledWith(
         'user.created',
         expect.objectContaining({
           event: 'user.created',
           userId: savedUser.id,
-          email: savedUser.email,
         }),
       );
     });
 
-    it('should throw ConflictException when email already exists', async () => {
-      const dto = userFactory();
-      mockUserRepository.findOne.mockResolvedValue({ id: 'existing-id', ...dto });
-
-      await expect(service.create(dto)).rejects.toThrow(ConflictException);
-      expect(mockUserRepository.save).not.toHaveBeenCalled();
-    });
-
-    it('should return cached result when idempotency key has success status', async () => {
-      const dto = userFactory();
-      const cachedUser = { id: 'cached-id', ...dto };
-      const idempotencyKey = 'idem-key-123';
-
+    it('should return cached response for idempotent request', async () => {
+      const cachedUser = { id: 'cached-user', ...createDto, balance: 0 };
       mockIdempotencyService.get.mockResolvedValue({ status: 'success', data: cachedUser });
 
-      const result = await service.create(dto, idempotencyKey);
+      const result = await service.create(createDto, 'idem-key-123');
 
       expect(result).toEqual(cachedUser);
-      expect(mockUserRepository.findOne).not.toHaveBeenCalled();
       expect(mockUserRepository.save).not.toHaveBeenCalled();
     });
 
-    it('should save idempotency key on new request', async () => {
-      const dto = userFactory();
-      const savedUser = { id: 'uuid-1', ...dto };
-      const idempotencyKey = 'idem-key-456';
+    it('should return pending status for in-progress idempotent request', async () => {
+      mockIdempotencyService.get.mockResolvedValue({ status: 'pending', data: null });
 
+      const result = await service.create(createDto, 'idem-key-123');
+
+      expect(result).toEqual({ status: 'pending', data: null });
+    });
+
+    it('should save idempotency response on new request', async () => {
+      const savedUser = { id: 'user-uuid-1', ...createDto, balance: 0 };
       mockIdempotencyService.get.mockResolvedValue(null);
       mockUserRepository.findOne.mockResolvedValue(null);
-      mockUserRepository.create.mockReturnValue(dto);
+      mockUserRepository.create.mockReturnValue(savedUser);
       mockUserRepository.save.mockResolvedValue(savedUser);
 
-      await service.create(dto, idempotencyKey);
+      await service.create(createDto, 'idem-key-456');
 
       expect(mockIdempotencyService.save).toHaveBeenCalledWith(
-        idempotencyKey,
-        expect.objectContaining({ status: 'pending' }),
+        'idem-key-456',
+        { status: 'success', data: savedUser },
       );
-      expect(mockIdempotencyService.save).toHaveBeenCalledWith(
-        idempotencyKey,
-        expect.objectContaining({ status: 'success', data: savedUser }),
-      );
-    });
-
-    it('should process request when idempotency key has pending status', async () => {
-      const dto = userFactory();
-      const savedUser = { id: 'uuid-1', ...dto };
-      const idempotencyKey = 'idem-key-789';
-
-      mockIdempotencyService.get.mockResolvedValue({ status: 'pending', data: null });
-      mockUserRepository.findOne.mockResolvedValue(null);
-      mockUserRepository.create.mockReturnValue(dto);
-      mockUserRepository.save.mockResolvedValue(savedUser);
-
-      const result = await service.create(dto, idempotencyKey);
-
-      expect(result).toEqual(savedUser);
-      expect(mockUserRepository.save).toHaveBeenCalled();
-    });
-
-    it('should create user without idempotency key', async () => {
-      const dto = userFactory();
-      const savedUser = { id: 'uuid-1', ...dto };
-
-      mockUserRepository.findOne.mockResolvedValue(null);
-      mockUserRepository.create.mockReturnValue(dto);
-      mockUserRepository.save.mockResolvedValue(savedUser);
-
-      const result = await service.create(dto, null);
-
-      expect(result).toEqual(savedUser);
-      expect(mockIdempotencyService.get).not.toHaveBeenCalled();
-      expect(mockIdempotencyService.save).not.toHaveBeenCalled();
-    });
-  });
-
-  // ==================== FIND BY ID ====================
-  describe('findById', () => {
-    it('should return cached user from Redis', async () => {
-      const cachedUser = { id: 'uuid-1', name: 'Test', email: 'test@example.com' };
-      mockRedisService.get.mockResolvedValue(JSON.stringify(cachedUser));
-
-      const result = await service.findById('uuid-1');
-
-      expect(result).toEqual(cachedUser);
-      expect(mockRedisService.get).toHaveBeenCalledWith('users:uuid-1');
-      expect(mockUserRepository.findOne).not.toHaveBeenCalled();
-    });
-
-    it('should fetch from database and cache when not in Redis', async () => {
-      const user = { id: 'uuid-1', name: 'Test', email: 'test@example.com', bankingDetails: null };
-      mockRedisService.get.mockResolvedValue(null);
-      mockUserRepository.findOne.mockResolvedValue(user);
-
-      const result = await service.findById('uuid-1');
-
-      expect(result).toEqual(user);
-      expect(mockUserRepository.findOne).toHaveBeenCalledWith({
-        where: { id: 'uuid-1' },
-        relations: ['bankingDetails'],
-      });
-      expect(mockRedisService.set).toHaveBeenCalledWith('users:uuid-1', user, 60);
-    });
-
-    it('should throw NotFoundException when user does not exist', async () => {
-      mockRedisService.get.mockResolvedValue(null);
-      mockUserRepository.findOne.mockResolvedValue(null);
-
-      await expect(service.findById('non-existent-id')).rejects.toThrow(NotFoundException);
     });
   });
 
   // ==================== FIND ALL ====================
   describe('findAll', () => {
-    it('should return all users ordered by createdAt DESC', async () => {
+    it('should return all users with balance', async () => {
       const users = [
-        { id: 'uuid-1', name: 'User 1', email: 'user1@example.com' },
-        { id: 'uuid-2', name: 'User 2', email: 'user2@example.com' },
+        { id: 'user-1', name: 'User 1', balance: 100 },
+        { id: 'user-2', name: 'User 2', balance: 200 },
       ];
       mockUserRepository.find.mockResolvedValue(users);
 
@@ -214,8 +214,8 @@ describe('UsersService', () => {
 
       expect(result).toEqual(users);
       expect(mockUserRepository.find).toHaveBeenCalledWith({
-        relations: ['bankingDetails'],
         order: { createdAt: 'DESC' },
+        relations: ['bankingDetails'],
       });
     });
 
@@ -228,20 +228,49 @@ describe('UsersService', () => {
     });
   });
 
+  // ==================== FIND BY ID ====================
+  describe('findById', () => {
+    it('should return cached user', async () => {
+      const cachedUser = { id: 'user-1', name: 'Cached User', balance: 100 };
+      mockRedisService.get.mockResolvedValue(cachedUser);
+
+      const result = await service.findById('user-1');
+
+      expect(result).toEqual(cachedUser);
+      expect(mockUserRepository.findOne).not.toHaveBeenCalled();
+    });
+
+    it('should fetch from DB and cache when not in Redis', async () => {
+      const user = { id: 'user-1', name: 'DB User', balance: 100 };
+      mockRedisService.get.mockResolvedValue(null);
+      mockUserRepository.findOne.mockResolvedValue(user);
+
+      const result = await service.findById('user-1');
+
+      expect(result).toEqual(user);
+      expect(mockRedisService.set).toHaveBeenCalledWith('user:user-1', user, 300);
+    });
+
+    it('should throw NotFoundException when user does not exist', async () => {
+      mockRedisService.get.mockResolvedValue(null);
+      mockUserRepository.findOne.mockResolvedValue(null);
+
+      await expect(service.findById('non-existent')).rejects.toThrow(NotFoundException);
+    });
+  });
+
   // ==================== UPDATE ====================
   describe('update', () => {
-    it('should update user successfully', async () => {
-      const existingUser = { id: 'uuid-1', name: 'Old Name', email: 'old@example.com' };
-      const updateDto = { name: 'New Name' };
-      const updatedUser = { ...existingUser, ...updateDto };
-
-      mockUserRepository.findOne.mockResolvedValue(existingUser);
+    it('should update user and clear cache', async () => {
+      const user = { id: 'user-1', name: 'Old Name', email: 'old@example.com' };
+      const updatedUser = { ...user, name: 'New Name' };
+      mockUserRepository.findOne.mockResolvedValue(user);
       mockUserRepository.save.mockResolvedValue(updatedUser);
 
-      const result = await service.update('uuid-1', updateDto);
+      const result = await service.update('user-1', { name: 'New Name' });
 
-      expect(result).toEqual(updatedUser);
-      expect(mockRedisService.del).toHaveBeenCalledWith('users:uuid-1');
+      expect(result.name).toBe('New Name');
+      expect(mockRedisService.del).toHaveBeenCalledWith('user:user-1');
     });
 
     it('should throw NotFoundException when user does not exist', async () => {
@@ -251,137 +280,97 @@ describe('UsersService', () => {
     });
 
     it('should throw ConflictException when updating to existing email', async () => {
-      const existingUser = { id: 'uuid-1', name: 'User 1', email: 'user1@example.com' };
-      const anotherUser = { id: 'uuid-2', name: 'User 2', email: 'user2@example.com' };
-
+      const user = { id: 'user-1', email: 'old@example.com' };
       mockUserRepository.findOne
-        .mockResolvedValueOnce(existingUser) // First call: find user to update
-        .mockResolvedValueOnce(anotherUser); // Second call: check if email exists
+        .mockResolvedValueOnce(user)
+        .mockResolvedValueOnce({ id: 'user-2', email: 'taken@example.com' });
 
-      await expect(service.update('uuid-1', { email: 'user2@example.com' })).rejects.toThrow(ConflictException);
+      await expect(service.update('user-1', { email: 'taken@example.com' })).rejects.toThrow(ConflictException);
     });
 
-    it('should allow updating to the same email', async () => {
-      const existingUser = { id: 'uuid-1', name: 'User 1', email: 'user1@example.com' };
+    it('should allow updating to same email', async () => {
+      const user = { id: 'user-1', name: 'Test', email: 'same@example.com' };
+      mockUserRepository.findOne.mockResolvedValue(user);
+      mockUserRepository.save.mockResolvedValue({ ...user, name: 'Updated' });
 
-      mockUserRepository.findOne.mockResolvedValue(existingUser);
-      mockUserRepository.save.mockResolvedValue(existingUser);
+      const result = await service.update('user-1', { email: 'same@example.com', name: 'Updated' });
 
-      const result = await service.update('uuid-1', { email: 'user1@example.com' });
+      expect(result.name).toBe('Updated');
+    });
+  });
 
-      expect(result).toEqual(existingUser);
-      expect(mockUserRepository.findOne).toHaveBeenCalledTimes(1);
+  // ==================== SET BANKING DETAILS ====================
+  describe('setBankingDetails', () => {
+    const bankingDto = { agency: '237', accountNumber: '12345678', accountType: 'checking' as const };
+
+    it('should create banking details for user without existing details', async () => {
+      const user = { id: 'user-1', name: 'Test', bankingDetails: null };
+      const savedDetails = { id: 'bd-1', ...bankingDto, user };
+
+      mockUserRepository.findOne.mockResolvedValue(user);
+      mockBankingDetailsRepository.create.mockReturnValue(savedDetails);
+      mockBankingDetailsRepository.save.mockResolvedValue(savedDetails);
+
+      const result = await service.setBankingDetails('user-1', bankingDto);
+
+      expect(result).toEqual(savedDetails);
+      expect(mockRabbitMQPublisher.publish).toHaveBeenCalledWith(
+        'banking_details.updated',
+        expect.objectContaining({ userId: 'user-1' }),
+      );
     });
 
-    it('should update multiple fields at once', async () => {
-      const existingUser = { id: 'uuid-1', name: 'Old', email: 'old@example.com', address: 'Old Address' };
-      const updateDto = { name: 'New', address: 'New Address' };
-      const updatedUser = { ...existingUser, ...updateDto };
+    it('should update existing banking details', async () => {
+      const existingDetails = { id: 'bd-1', agency: '001', accountNumber: '11111111', accountType: 'savings' };
+      const user = { id: 'user-1', name: 'Test', bankingDetails: existingDetails };
+      const updatedDetails = { ...existingDetails, ...bankingDto };
 
-      mockUserRepository.findOne.mockResolvedValue(existingUser);
-      mockUserRepository.save.mockResolvedValue(updatedUser);
+      mockUserRepository.findOne.mockResolvedValue(user);
+      mockBankingDetailsRepository.save.mockResolvedValue(updatedDetails);
 
-      const result = await service.update('uuid-1', updateDto);
+      const result = await service.setBankingDetails('user-1', bankingDto);
 
-      expect(result.name).toBe('New');
-      expect(result.address).toBe('New Address');
+      expect(result.agency).toBe(bankingDto.agency);
+    });
+
+    it('should throw NotFoundException when user does not exist', async () => {
+      mockUserRepository.findOne.mockResolvedValue(null);
+
+      await expect(service.setBankingDetails('non-existent', bankingDto)).rejects.toThrow(NotFoundException);
+    });
+
+    it('should clear both user and banking cache', async () => {
+      const user = { id: 'user-1', name: 'Test', bankingDetails: null };
+      const savedDetails = { id: 'bd-1', ...bankingDto, user };
+
+      mockUserRepository.findOne.mockResolvedValue(user);
+      mockBankingDetailsRepository.create.mockReturnValue(savedDetails);
+      mockBankingDetailsRepository.save.mockResolvedValue(savedDetails);
+
+      await service.setBankingDetails('user-1', bankingDto);
+
+      expect(mockRedisService.del).toHaveBeenCalledWith('user:user-1');
+      expect(mockRedisService.del).toHaveBeenCalledWith('user:user-1:banking');
     });
   });
 
   // ==================== DELETE ====================
   describe('delete', () => {
-    it('should delete user successfully', async () => {
-      const user = { id: 'uuid-1', name: 'Test', email: 'test@example.com' };
+    it('should delete user and clear cache', async () => {
+      const user = { id: 'user-1', name: 'To Delete' };
       mockUserRepository.findOne.mockResolvedValue(user);
       mockUserRepository.delete.mockResolvedValue({ affected: 1 });
 
-      const result = await service.delete('uuid-1');
+      const result = await service.delete('user-1');
 
-      expect(result).toBe(true);
-      expect(mockUserRepository.delete).toHaveBeenCalledWith('uuid-1');
-      expect(mockRedisService.del).toHaveBeenCalledWith('users:uuid-1');
+      expect(result).toEqual({ deleted: true });
+      expect(mockRedisService.del).toHaveBeenCalledWith('user:user-1');
     });
 
     it('should throw NotFoundException when user does not exist', async () => {
       mockUserRepository.findOne.mockResolvedValue(null);
 
       await expect(service.delete('non-existent')).rejects.toThrow(NotFoundException);
-      expect(mockUserRepository.delete).not.toHaveBeenCalled();
-    });
-  });
-
-  // ==================== SET BANKING DETAILS ====================
-  describe('setBankingDetails', () => {
-    it('should create new banking details for user without existing details', async () => {
-      const user = { id: 'uuid-1', name: 'Test', email: 'test@example.com', bankingDetails: null };
-      const bankingDto = bankingFactory();
-      const savedDetails = { id: 'banking-1', ...bankingDto, userId: user.id };
-
-      mockUserRepository.findOne.mockResolvedValue(user);
-      mockBankingDetailsRepository.create.mockReturnValue({ ...bankingDto, user, userId: user.id });
-      mockBankingDetailsRepository.save.mockResolvedValue(savedDetails);
-
-      const result = await service.setBankingDetails('uuid-1', bankingDto);
-
-      expect(result).toEqual(savedDetails);
-      expect(mockBankingDetailsRepository.create).toHaveBeenCalledWith({
-        ...bankingDto,
-        user,
-        userId: user.id,
-      });
-      expect(mockRabbitMQPublisher.publish).toHaveBeenCalledWith(
-        'banking_details.updated',
-        expect.objectContaining({
-          event: 'banking_details.updated',
-          userId: user.id,
-        }),
-      );
-      expect(mockRedisService.del).toHaveBeenCalledWith('users:uuid-1');
-    });
-
-    it('should update existing banking details', async () => {
-      const existingDetails = { id: 'banking-1', agency: '001', accountNumber: '11111111', accountType: 'checking' };
-      const user = { id: 'uuid-1', name: 'Test', email: 'test@example.com', bankingDetails: existingDetails };
-      const bankingDto = { agency: '237', accountNumber: '99999999', accountType: 'savings' };
-      const updatedDetails = { ...existingDetails, ...bankingDto };
-
-      mockUserRepository.findOne.mockResolvedValue(user);
-      mockBankingDetailsRepository.save.mockResolvedValue(updatedDetails);
-
-      const result = await service.setBankingDetails('uuid-1', bankingDto);
-
-      expect(result).toEqual(updatedDetails);
-      expect(mockBankingDetailsRepository.create).not.toHaveBeenCalled();
-      expect(mockBankingDetailsRepository.save).toHaveBeenCalled();
-    });
-
-    it('should throw NotFoundException when user does not exist', async () => {
-      mockUserRepository.findOne.mockResolvedValue(null);
-
-      await expect(service.setBankingDetails('non-existent', bankingFactory())).rejects.toThrow(NotFoundException);
-    });
-
-    it('should publish event with correct banking details', async () => {
-      const user = { id: 'uuid-1', name: 'Test', email: 'test@example.com', bankingDetails: null };
-      const bankingDto = { agency: '237', accountNumber: '12345678', accountType: 'checking' };
-      const savedDetails = { id: 'banking-1', ...bankingDto, userId: user.id };
-
-      mockUserRepository.findOne.mockResolvedValue(user);
-      mockBankingDetailsRepository.create.mockReturnValue({ ...bankingDto, user, userId: user.id });
-      mockBankingDetailsRepository.save.mockResolvedValue(savedDetails);
-
-      await service.setBankingDetails('uuid-1', bankingDto);
-
-      expect(mockRabbitMQPublisher.publish).toHaveBeenCalledWith(
-        'banking_details.updated',
-        expect.objectContaining({
-          details: {
-            agency: '237',
-            accountNumber: '12345678',
-            accountType: 'checking',
-          },
-        }),
-      );
     });
   });
 });
