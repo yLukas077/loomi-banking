@@ -1,14 +1,14 @@
 import {
   Injectable,
-  ConflictException,
   NotFoundException,
+  ConflictException,
 } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
 import { Repository } from 'typeorm'
 import { User } from './entities/user.entity'
+import { BankingDetails } from './entities/banking-details.entity'
 import { CreateUserDto } from './dto/create-user.dto'
 import { UpdateUserDto } from './dto/update-user.dto'
-import { BankingDetails } from './entities/banking-details.entity'
 import { BankingDetailsDto } from './dto/banking-details.dto'
 import { RabbitMQPublisher } from '../rabbitmq/rabbitmq.publisher'
 import { RedisService } from '../redis/redis.service'
@@ -18,35 +18,35 @@ import { IdempotencyService } from '../common/idempotency/idempotency.service'
 export class UsersService {
   constructor(
     @InjectRepository(User)
-    private usersRepo: Repository<User>,
-
+    private readonly usersRepo: Repository<User>,
     @InjectRepository(BankingDetails)
-    private detailsRepo: Repository<BankingDetails>,
-
+    private readonly bankingDetailsRepo: Repository<BankingDetails>,
     private readonly publisher: RabbitMQPublisher,
     private readonly redis: RedisService,
     private readonly idempotency: IdempotencyService,
   ) {}
 
-  async create(data: CreateUserDto, idempotencyKey?: string | null) {
-
+  async create(data: CreateUserDto, idempotencyKey?: string) {
     if (idempotencyKey) {
       const cached = await this.idempotency.get(idempotencyKey)
       if (cached?.status === 'success') {
         return cached.data
       }
-
-      await this.idempotency.save(idempotencyKey, {
-        status: 'pending',
-        data: null,
-        createdAt: new Date().toISOString(),
-      })
+      if (cached?.status === 'pending') {
+        return cached
+      }
+      await this.idempotency.save(idempotencyKey, { status: 'pending', data: null })
     }
 
     const exists = await this.usersRepo.findOne({ where: { email: data.email } })
-    if (exists) throw new ConflictException('Email já está em uso')
+    if (exists) {
+      throw new ConflictException('Email already exists')
+    }
 
-    const user = this.usersRepo.create(data)
+    const user = this.usersRepo.create({
+      ...data,
+      balance: 0,
+    })
     const saved = await this.usersRepo.save(user)
 
     await this.publisher.publish('user.created', {
@@ -58,21 +58,22 @@ export class UsersService {
     })
 
     if (idempotencyKey) {
-      await this.idempotency.save(idempotencyKey, {
-        status: 'success',
-        data: saved,
-        createdAt: new Date().toISOString(),
-      })
+      await this.idempotency.save(idempotencyKey, { status: 'success', data: saved })
     }
 
     return saved
   }
 
-  async findById(id: string) {
-    const cacheKey = `users:${id}`
+  async findAll() {
+    return this.usersRepo.find({
+      order: { createdAt: 'DESC' },
+      relations: ['bankingDetails'],
+    })
+  }
 
-    const cached = await this.redis.get(cacheKey)
-    if (cached) return JSON.parse(cached)
+  async findById(id: string) {
+    const cached = await this.redis.get(`user:${id}`)
+    if (cached) return cached
 
     const user = await this.usersRepo.findOne({
       where: { id },
@@ -81,16 +82,21 @@ export class UsersService {
 
     if (!user) throw new NotFoundException('User not found')
 
-    await this.redis.set(cacheKey, user, 60)
+    await this.redis.set(`user:${id}`, user, 300)
 
     return user
   }
 
-  async findAll() {
-    return this.usersRepo.find({
-      relations: ['bankingDetails'],
-      order: { createdAt: 'DESC' },
-    })
+  async getBalance(id: string) {
+    const user = await this.usersRepo.findOne({ where: { id } })
+
+    if (!user) throw new NotFoundException('User not found')
+
+    return {
+      userId: user.id,
+      balance: Number(user.balance),
+      updatedAt: user.updatedAt,
+    }
   }
 
   async update(id: string, data: UpdateUserDto) {
@@ -98,26 +104,18 @@ export class UsersService {
     if (!user) throw new NotFoundException('User not found')
 
     if (data.email && data.email !== user.email) {
-      const exists = await this.usersRepo.findOne({ where: { email: data.email } })
-      if (exists) throw new ConflictException('Email já está em uso')
+      const emailExists = await this.usersRepo.findOne({ where: { email: data.email } })
+      if (emailExists) {
+        throw new ConflictException('Email already exists')
+      }
     }
 
-    const updated = Object.assign(user, data)
-    const saved = await this.usersRepo.save(updated)
+    Object.assign(user, data)
+    const saved = await this.usersRepo.save(user)
 
-    await this.redis.del(`users:${id}`)
+    await this.redis.del(`user:${id}`)
 
     return saved
-  }
-
-  async delete(id: string) {
-    const user = await this.usersRepo.findOne({ where: { id } })
-    if (!user) throw new NotFoundException('User not found')
-
-    await this.usersRepo.delete(id)
-    await this.redis.del(`users:${id}`)
-
-    return true
   }
 
   async setBankingDetails(userId: string, data: BankingDetailsDto) {
@@ -128,29 +126,43 @@ export class UsersService {
 
     if (!user) throw new NotFoundException('User not found')
 
-    let result: BankingDetails
+    let details = user.bankingDetails
 
-    if (user.bankingDetails) {
-      Object.assign(user.bankingDetails, data)
-      result = await this.detailsRepo.save(user.bankingDetails)
+    if (details) {
+      Object.assign(details, data)
     } else {
-      const newDetails = this.detailsRepo.create({ ...data, user, userId: user.id })
-      result = await this.detailsRepo.save(newDetails)
+      details = this.bankingDetailsRepo.create({
+        ...data,
+        user,
+      })
     }
+
+    const saved = await this.bankingDetailsRepo.save(details)
 
     await this.publisher.publish('banking_details.updated', {
       event: 'banking_details.updated',
       userId: user.id,
       details: {
-        agency: result.agency,
-        accountNumber: result.accountNumber,
-        accountType: result.accountType,
+        agency: saved.agency,
+        accountNumber: saved.accountNumber,
+        accountType: saved.accountType,
       },
       timestamp: new Date().toISOString(),
     })
 
-    await this.redis.del(`users:${userId}`)
+    await this.redis.del(`user:${userId}`)
+    await this.redis.del(`user:${userId}:banking`)
 
-    return result
+    return saved
+  }
+
+  async delete(id: string) {
+    const user = await this.usersRepo.findOne({ where: { id } })
+    if (!user) throw new NotFoundException('User not found')
+
+    await this.usersRepo.delete(id)
+    await this.redis.del(`user:${id}`)
+
+    return { deleted: true }
   }
 }
