@@ -12,6 +12,7 @@ describe('TransactionsController', () => {
     create: jest.fn(),
     findAll: jest.fn(),
     findById: jest.fn(),
+    findByUser: jest.fn(),
     updateStatus: jest.fn(),
   };
 
@@ -31,14 +32,58 @@ describe('TransactionsController', () => {
 
   // ==================== CREATE ====================
   describe('create', () => {
-    const createDto = {
-      userId: 'user-uuid-1',
-      type: TransactionType.DEPOSIT,
-      amount: 100.50,
-      description: 'Test deposit',
-    };
+    it('should create a deposit transaction', async () => {
+      const createDto = {
+        receiverUserId: 'receiver-uuid-1',
+        type: TransactionType.DEPOSIT,
+        amount: 100,
+      };
+      const expectedResult = { id: 'tx-uuid-1', ...createDto, senderUserId: null, status: TransactionStatus.PENDING };
+      mockTransactionsService.create.mockResolvedValue(expectedResult);
+
+      const result = await controller.create(createDto);
+
+      expect(result).toEqual(expectedResult);
+      expect(service.create).toHaveBeenCalledWith(createDto, undefined);
+    });
+
+    it('should create a withdraw transaction', async () => {
+      const createDto = {
+        senderUserId: 'sender-uuid-1',
+        type: TransactionType.WITHDRAW,
+        amount: 50,
+      };
+      const expectedResult = { id: 'tx-uuid-1', ...createDto, receiverUserId: null, status: TransactionStatus.PENDING };
+      mockTransactionsService.create.mockResolvedValue(expectedResult);
+
+      const result = await controller.create(createDto);
+
+      expect(result).toEqual(expectedResult);
+    });
+
+    it('should create a transfer transaction', async () => {
+      const createDto = {
+        senderUserId: 'sender-uuid-1',
+        receiverUserId: 'receiver-uuid-1',
+        type: TransactionType.TRANSFER,
+        amount: 200,
+      };
+      const expectedResult = { id: 'tx-uuid-1', ...createDto, status: TransactionStatus.PENDING };
+      mockTransactionsService.create.mockResolvedValue(expectedResult);
+
+      const result = await controller.create(createDto);
+
+      expect(result).toEqual(expectedResult);
+      expect(result.senderUserId).toBe('sender-uuid-1');
+      expect(result.receiverUserId).toBe('receiver-uuid-1');
+    });
 
     it('should create a transaction with idempotency key', async () => {
+      const createDto = {
+        receiverUserId: 'receiver-uuid-1',
+        type: TransactionType.DEPOSIT,
+        amount: 100,
+      };
       const expectedResult = { id: 'tx-uuid-1', ...createDto, status: TransactionStatus.PENDING };
       mockTransactionsService.create.mockResolvedValue(expectedResult);
 
@@ -48,18 +93,25 @@ describe('TransactionsController', () => {
       expect(service.create).toHaveBeenCalledWith(createDto, 'idem-key-123');
     });
 
-    it('should create a transaction without idempotency key', async () => {
-      const expectedResult = { id: 'tx-uuid-1', ...createDto, status: TransactionStatus.PENDING };
-      mockTransactionsService.create.mockResolvedValue(expectedResult);
+    it('should propagate BadRequestException for same account transfer', async () => {
+      const createDto = {
+        senderUserId: 'same-uuid',
+        receiverUserId: 'same-uuid',
+        type: TransactionType.TRANSFER,
+        amount: 100,
+      };
+      mockTransactionsService.create.mockRejectedValue(new BadRequestException('Cannot transfer to the same account'));
 
-      const result = await controller.create(createDto);
-
-      expect(result).toEqual(expectedResult);
-      expect(service.create).toHaveBeenCalledWith(createDto, undefined);
+      await expect(controller.create(createDto)).rejects.toThrow(BadRequestException);
     });
 
-    it('should propagate BadRequestException from service', async () => {
-      mockTransactionsService.create.mockRejectedValue(new BadRequestException('User does not exist'));
+    it('should propagate BadRequestException for missing banking details', async () => {
+      const createDto = {
+        senderUserId: 'sender-uuid-1',
+        type: TransactionType.WITHDRAW,
+        amount: 100,
+      };
+      mockTransactionsService.create.mockRejectedValue(new BadRequestException('Sender has no banking details'));
 
       await expect(controller.create(createDto)).rejects.toThrow(BadRequestException);
     });
@@ -67,18 +119,32 @@ describe('TransactionsController', () => {
 
   // ==================== FIND ALL ====================
   describe('findAll', () => {
-    it('should return all transactions', async () => {
+    it('should return all transactions when no userId provided', async () => {
       const transactions = [
-        { id: 'tx-1', userId: 'user-1', type: TransactionType.DEPOSIT, amount: 100, status: TransactionStatus.COMPLETED },
-        { id: 'tx-2', userId: 'user-2', type: TransactionType.WITHDRAW, amount: 50, status: TransactionStatus.PENDING },
+        { id: 'tx-1', type: TransactionType.DEPOSIT, amount: 100 },
+        { id: 'tx-2', type: TransactionType.TRANSFER, amount: 50 },
       ];
       mockTransactionsService.findAll.mockResolvedValue(transactions);
 
       const result = await controller.findAll();
 
       expect(result).toEqual(transactions);
-      expect(result).toHaveLength(2);
       expect(service.findAll).toHaveBeenCalled();
+      expect(service.findByUser).not.toHaveBeenCalled();
+    });
+
+    it('should return user transactions when userId provided', async () => {
+      const transactions = [
+        { id: 'tx-1', senderUserId: 'user-1', type: TransactionType.WITHDRAW },
+        { id: 'tx-2', receiverUserId: 'user-1', type: TransactionType.DEPOSIT },
+      ];
+      mockTransactionsService.findByUser.mockResolvedValue(transactions);
+
+      const result = await controller.findAll('user-1');
+
+      expect(result).toEqual(transactions);
+      expect(service.findByUser).toHaveBeenCalledWith('user-1');
+      expect(service.findAll).not.toHaveBeenCalled();
     });
 
     it('should return empty array when no transactions exist', async () => {
@@ -95,8 +161,9 @@ describe('TransactionsController', () => {
     it('should return a transaction by id', async () => {
       const transaction = {
         id: 'tx-uuid-1',
-        userId: 'user-uuid-1',
-        type: TransactionType.DEPOSIT,
+        senderUserId: 'sender-uuid-1',
+        receiverUserId: 'receiver-uuid-1',
+        type: TransactionType.TRANSFER,
         amount: 100,
         status: TransactionStatus.PENDING,
       };
@@ -120,8 +187,9 @@ describe('TransactionsController', () => {
     it('should update transaction status to COMPLETED', async () => {
       const updatedTx = {
         id: 'tx-uuid-1',
-        userId: 'user-uuid-1',
-        type: TransactionType.DEPOSIT,
+        senderUserId: 'sender-uuid-1',
+        receiverUserId: 'receiver-uuid-1',
+        type: TransactionType.TRANSFER,
         amount: 100,
         status: TransactionStatus.COMPLETED,
       };

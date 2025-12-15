@@ -48,7 +48,7 @@ export class TransactionsService {
       senderUserId: saved.senderUserId,
       receiverUserId: saved.receiverUserId,
       type: saved.type,
-      amount: saved.amount,
+      amount: Number(saved.amount),
       timestamp: new Date().toISOString(),
     })
 
@@ -150,14 +150,6 @@ export class TransactionsService {
     })
   }
 
-  async findByUser(userId: string) {
-    return this.transactionsRepo.find({
-      where: { userId },
-      order: { createdAt: 'DESC' },
-    })
-  }
-
-
   async findById(id: string) {
     const tx = await this.transactionsRepo.findOne({ where: { id } })
     if (!tx) throw new NotFoundException('Transaction not found')
@@ -181,11 +173,14 @@ export class TransactionsService {
     tx.status = status
     const saved = await this.transactionsRepo.save(tx)
 
+    // IMPORTANTE: Incluir type e amount no evento!
     await this.publisher.publish('transaction.status_updated', {
       event: 'transaction.status_updated',
       transactionId: saved.id,
       senderUserId: saved.senderUserId,
       receiverUserId: saved.receiverUserId,
+      type: saved.type,
+      amount: Number(saved.amount),
       newStatus: saved.status,
       timestamp: new Date().toISOString(),
     })
